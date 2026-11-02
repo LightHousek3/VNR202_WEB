@@ -1,6 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "functions": {
     "api/chat.js": {
       "includeFiles": "textbooks/**/*.txt",
@@ -10,5 +12,8 @@
       "includeFiles": "textbooks/**/*.txt",
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

@@ -1,24 +1,13 @@
-# Mạch Mekong — bản đồ học tập MLN131
+# Phòng họp đại biểu Đại hội IX
 
-## Website này sinh ra để làm gì?
+Ứng dụng học tập VNR202, nơi người học xử lý chín tờ trình theo ba bước: đọc tóm tắt có nguồn, chọn hướng thảo luận mô phỏng, rồi đối chiếu với nội dung giáo trình về Đại hội IX. Sản phẩm ghi rõ các lựa chọn không phải biên bản hoặc số liệu bỏ phiếu thật.
 
-Mạch Mekong giúp sinh viên nhìn các khái niệm trong chương **SỨ MỆNH LỊCH SỬ CÜA GIAI CÂP CÔNG NHÂN** qua những ngành nghề cụ thể ở Đồng bằng sông Cửu Long. Website tập trung vào một câu hỏi gần gũi: **người lao động tham gia vào quá trình làm ra sản phẩm như thế nào?**
+## Nguồn học tập
 
-Nội dung lý luận được diễn giải từ giáo trình đính kèm, đặc biệt là Chương 2 về giai cấp công nhân. Các ví dụ thực tế có đường dẫn tới báo chí hoặc cổng thông tin nhà nước để người học tự kiểm tra.
+Ứng dụng dùng duy nhất tệp PDF theo ấn bản 2021.
 
-## Các phần chính
+- PDF nguồn: `textbooks/Giao-trinh-Lich-su-Dang-Cong-san-Viet-Nam-2021.pdf`
 
-- **Bản đồ học tập:** chọn một trong năm địa phương: Cần Thơ, An Giang, Đồng Tháp, Vĩnh Long hoặc Cà Mau. Sau đó chọn một góc nhìn sản xuất để xem thông tin thực tế, đóng góp của công nhân, cách phát huy vai trò và câu hỏi liên hệ.
-- **Học từ giáo trình:** giải thích ngắn khái niệm giai cấp công nhân, sứ mệnh lịch sử và ba mặt của sứ mệnh bằng lời dễ đọc.
-- **Phòng thử ý tưởng:** chọn một hướng phát triển để xem những địa phương nào có thể cùng thảo luận. Đây là gợi ý học tập, không phải dự báo hay khẳng định dự án đã triển khai.
-- **Góc hỏi bài:** đặt câu hỏi môn MLN131. Câu trả lời dùng những đoạn tìm được trong các tệp giáo trình đang có và hiển thị mục tham khảo để người học đối chiếu.
+## Hỏi Agent
 
-## Cách đọc các ví dụ
-
-Mỗi thẻ có liên kết tới nguồn gốc. Phần mô tả cho biết nguồn xác nhận điều gì; các bước và vai trò là khung minh họa nếu nguồn không khảo sát chi tiết từng cơ sở. Định hướng phát triển được phân biệt với hoạt động đã ghi nhận. Vì vậy, hãy mở nguồn để kiểm tra mốc thời gian và phạm vi thông tin trước khi dùng làm dẫn chứng.
-
-Các điểm trên bản đồ chỉ đại diện cho địa phương để chọn nội dung; chúng không phải vị trí chính xác của nhà máy hay ranh giới hành chính.
-
-## Giá trị dành cho người học
-
-Website hỗ trợ ôn tập, đặt câu hỏi và luyện cách nối lý luận với tình huống thực tế. Phần giải thích được viết lại cho dễ hiểu, không thay thế giáo trình hoặc việc đọc tài liệu gốc. Khi cần dùng một nhận định trong bài học, hãy kiểm tra lại phần tương ứng trong sách và nguồn được dẫn.
+Agent tra cứu toàn văn giáo trình, gồm phần mở đầu và cả ba chương; các câu hỏi tóm tắt chương 1, 2 hoặc 3 đều có thể đối chiếu theo trang in. Khi có key, Agent liệt kê model khả dụng theo từng key rồi gọi Gemini; câu trả lời hiển thị đoạn nguồn, chương và trang để người học kiểm tra. Nếu chưa có key hoặc tất cả lượt gọi thất bại, Agent dùng tra cứu cục bộ làm phương án dự phòng.
