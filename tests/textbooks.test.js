@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterCongress, chatSuggestions, dossiers, textbook } from '../src/data.js';
-import { answerQuestion, BOOK_PDF, loadTextbooks, normalize, retrieve, splitChunks } from '../server/textbooks.js';
+import { answerQuestion, BOOK_PDF, loadTextbooks, normalize, retrieve, retrieveBookSummary, splitChunks } from '../server/textbooks.js';
 import { createApp } from '../server/index.js';
+import { truncateLongLists } from '../server/gemini.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const corpus = await loadTextbooks(root);
@@ -124,6 +125,124 @@ test('Agent can summarize each chapter and the whole book with chapter-matched c
   }
   const allChapters = answerQuestion('Tóm tắt chương 1, chương 2 và chương 3', corpus);
   assert.deepEqual(allChapters.sources.slice(0, 3).map((source) => source.page), [14, 60, 115]);
+});
+
+test('whole-book summary retrieves the introduction and all three chapters with at most ten citation entries', () => {
+  const result = answerQuestion('Tóm tắt toàn bộ giáo trình', corpus);
+  assert.equal(result.responseKind, 'book-summary');
+  assert.equal(result.summaryWholeBook, true);
+  assert.equal(result.grounded, true);
+  const introductionEvidence = result.evidence.filter((source) => source.chapter === 'Mở đầu');
+  assert.ok(introductionEvidence.length > 0);
+  assert.ok(introductionEvidence.every((source) => source.page >= 2 && source.page <= 13));
+  for (const chapter of ['Chương 1', 'Chương 2', 'Chương 3']) {
+    assert.ok(result.evidence.some((source) => source.chapter === chapter), chapter);
+  }
+  for (const page of [15, 21, 25, 32, 38, 42]) {
+    assert.ok(result.evidence.some((source) => source.chapter === 'Chương 1' && source.page === page), 'Chương 1 page ' + page);
+  }
+  for (const page of [69, 76, 86, 99, 113]) {
+    assert.ok(result.evidence.some((source) => source.chapter === 'Chương 2' && source.page === page), 'Chương 2 page ' + page);
+  }
+  assert.ok(result.evidence.some((source) => source.chapter === 'Chương 3' && source.section === 'Đại hội IX'));
+  assert.ok(result.evidence.some((source) => source.chapter === 'Chương 3' && source.section === 'Đại hội X'));
+  assert.match(result.evidence.find((source) => source.page === 146).excerpt, /Đại hội IX của Đảng họp tại Hà Nội/);
+  assert.match(result.evidence.find((source) => source.page === 153).excerpt, /Đại hội X của Đảng họp tại Hà Nội/);
+  assert.ok(result.sources.length <= 10);
+  assert.equal(new Set(result.sources.map((source) => source.page)).size, result.sources.length);
+  assert.ok(result.sources.some((source) => source.chapter === 'Chương 3' && source.page === 146));
+  assert.ok(result.sources.some((source) => source.chapter === 'Chương 3' && source.page === 153));
+  assert.ok(result.sources.some((source) => source.chapter === 'Chương nhập môn'));
+  assert.deepEqual(retrieveBookSummary(corpus).map((chunk) => chunk.chapter).filter((chapter, index, all) => all.indexOf(chapter) === index), [
+    'Mở đầu', 'Chương 1', 'Chương 2', 'Chương 3',
+  ]);
+  const scopedChapter = answerQuestion('Tóm tắt giáo trình chương 3', corpus);
+  assert.equal(scopedChapter.responseKind, 'chapter-summary');
+  assert.deepEqual([...new Set(scopedChapter.evidence.map((source) => source.chapter))], ['Chương 3']);
+});
+
+test('whole-book Gemini prompt explicitly covers Congress IX and X from their matched source pages', async () => {
+  let generationPrompt = '';
+  const mockFetch = async (url, options) => {
+    if (String(url).includes('/v1beta/models?')) {
+      return new Response(JSON.stringify({ models: [
+        { name: 'models/gemini-test-flash', supportedGenerationMethods: ['generateContent'] },
+      ] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    generationPrompt = JSON.parse(options.body).contents[0].parts[0].text;
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'Tóm tắt ngắn toàn bộ giáo trình theo phần nhập môn và ba chương. Chương 1 trình bày sự ra đời của Đảng và các phong trào cách mạng. Chương 2 khái quát hai cuộc kháng chiến. Chương 3 trình bày quá độ lên chủ nghĩa xã hội, Đại hội IX, Đại hội X và công cuộc đổi mới.' }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await withServer({ corpus, apiKeys: ['test-key'], fetchImpl: mockFetch }, async (base) => {
+    const response = await fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Tóm tắt toàn bộ giáo trình' }),
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(result.provider, 'gemini');
+    assert.ok(result.sources.some((source) => source.page === 146));
+    assert.ok(result.sources.some((source) => source.page === 153));
+    assert.match(generationPrompt, /Đại hội IX \(nguồn trang 146\)/);
+    assert.match(generationPrompt, /Đại hội X \(nguồn trang 153\)/);
+    assert.match(generationPrompt, /Vị trí: Chương 3 · Đại hội IX · trang in 146/);
+    assert.match(generationPrompt, /Vị trí: Chương 3 · Đại hội X · trang in 153/);
+  });
+});
+
+test('short emotional replies retain conversation context for Gemini and do not inherit textbook sources', () => {
+  const result = answerQuestion('huhu', corpus, [
+    { role: 'user', text: 'Tóm tắt toàn bộ giáo trình' },
+    { role: 'assistant', text: 'Đây là tóm tắt ngắn về phần nhập môn và ba chương.' },
+  ]);
+  assert.equal(result.responseKind, 'conversation-followup');
+  assert.equal(result.sources.length, 0);
+  assert.equal(result.textbookChecked, false);
+});
+
+test('Gemini prompt for a short reaction keeps the prior chat and omits textbook source instructions', async () => {
+  let generationPrompt = '';
+  const mockFetch = async (url, options) => {
+    if (String(url).includes('/v1beta/models?')) {
+      return new Response(JSON.stringify({ models: [
+        { name: 'models/gemini-test-flash', supportedGenerationMethods: ['generateContent'] },
+      ] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    generationPrompt = JSON.parse(options.body).contents[0].parts[0].text;
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'Mình hiểu, bản tóm tắt vừa rồi có thể hơi nhiều ý. Mình có thể rút gọn lại nếu bạn muốn.' }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await withServer({ corpus, apiKeys: ['test-key'], fetchImpl: mockFetch }, async (base) => {
+    const response = await fetch(base + '/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'huhu',
+        history: [
+          { role: 'user', text: 'Tóm tắt toàn bộ giáo trình' },
+          { role: 'assistant', text: 'Đây là tóm tắt ngắn về phần nhập môn và ba chương.' },
+        ],
+      }),
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(result.provider, 'gemini');
+    assert.equal(result.sources.length, 0);
+    assert.match(generationPrompt, /hồi đáp ấm áp, ngắn gọn/);
+    assert.match(generationPrompt, /HỘI THOẠI GẦN ĐÂY/);
+    assert.doesNotMatch(generationPrompt, /TRÍCH ĐOẠN NGUỒN|Không có đoạn giáo trình phù hợp/);
+  });
+});
+
+test('long generated lists retain ten entries and use an ellipsis for the rest', () => {
+  const longList = Array.from({ length: 13 }, (_, index) => `${index + 1}. Mục ${index + 1}`).join('\n');
+  const answer = truncateLongLists(longList);
+  assert.equal((answer.match(/^\d+\./gm) || []).length, 10);
+  assert.match(answer, /\n…$/);
+  assert.doesNotMatch(answer, /11\. Mục 11/);
 });
 
 test('every suggested question returns a source or a clear not-found response', () => {

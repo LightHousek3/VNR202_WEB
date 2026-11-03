@@ -764,7 +764,6 @@ function Summary({ choices, completed, onOpenDossier, onHome, onReset }) {
                     <small>ĐÃ ĐỐI CHIẾU</small>
                 </div>
             </div>
-            <SimulationNotice />
             <section className="summary-score" aria-label="Tổng hợp lựa chọn đã ghi biên bản">
                 <article>
                     <span>ĐÃ GHI BIÊN BẢN</span>
@@ -1012,7 +1011,9 @@ function ChatDrawer({ open, onClose, pendingQuestion }) {
                 </div>
                 <div className="chat-rule">
                     <Sparkles size={15} />
-                        <span>Hỏi tự nhiên về mọi nội dung; câu trả lời dựa trên giáo trình sẽ kèm nguồn</span>
+                    <span>
+                        Hỏi tự nhiên về mọi nội dung; câu trả lời dựa trên giáo trình sẽ kèm nguồn
+                    </span>
                 </div>
                 <div className="chat-feed" ref={feedRef} aria-live="polite">
                     {messages.map((message, index) => {

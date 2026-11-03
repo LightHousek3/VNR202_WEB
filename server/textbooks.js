@@ -35,8 +35,18 @@ const SUMMARY_CUES = /\b(tom tat|tom lai|tom luoc|so luoc|tong hop|tong quan|kha
 
 function summaryRequest(question = '') {
   if (!SUMMARY_CUES.test(normalize(question))) return null;
+  const normalized = normalize(question);
   const chapters = requestedChapters(question);
   if (chapters.length) return { kind: 'chapters', chapters };
+  const wholeBook = /\b(?:toan bo (?:noi dung )?(?:giao trinh|sach|cuon sach)|tom tat (?:(?:toan bo|het|ca) )?(?:giao trinh|sach|cuon sach)|tat ca cac chuong|ca giao trinh|het giao trinh)\b/.test(normalized);
+  if (wholeBook) return { kind: 'book', chapters: [1, 2, 3] };
+  const congress = question.match(/đại hội\s+(?:lần\s+thứ\s+)?(ix|x|xi|xii|1{1,2}|[1-9]|09|10|11|12)\b/i);
+  if (congress) {
+    const numeral = congress[1].toUpperCase();
+    const number = { IX: 9, X: 10, XI: 11, XII: 12 }[numeral] || Number(numeral);
+    const label = 'Đại hội ' + ({ 9: 'IX', 10: 'X', 11: 'XI', 12: 'XII' }[number] || number);
+    return { kind: 'section', section: label, label };
+  }
   if (asksAboutCongressIX(question)) return { kind: 'section', section: 'Đại hội IX', label: 'Đại hội IX' };
   return { kind: 'unspecified', chapters: [] };
 }
@@ -46,6 +56,12 @@ export function isChapterSummaryIntent(question = '') {
 }
 
 const DETAIL_FOLLOWUP = /\b(chi tiet hon|noi ro hon|giai thich them|mo rong them|phan tich them|phan tich sau hon|noi them|cu the hon|day du hon|tiep tuc|y chinh la gi)\b/;
+const SHORT_REACTION = /^(?:huhu+|hu hu+|haha+|ha ha+|hic+|ok(?:ay)?|cam on|thanks?|wow|uhm+|da|vang)[!.?\s]*$/;
+
+function isContextualReaction(question, history = []) {
+  const hasConversation = history.some((turn) => turn?.role === 'assistant' && typeof turn.text === 'string' && turn.text.trim());
+  return hasConversation && question.trim().length <= 32 && SHORT_REACTION.test(normalize(question));
+}
 
 function resolveStudyQuestion(question, history = []) {
   const previousUserQuestion = [...history].reverse()
@@ -58,10 +74,11 @@ function resolveStudyQuestion(question, history = []) {
     : detectedSummary;
   const summaryFields = activeSummary ? {
     summaryIntent: true,
-    summaryChapters: activeSummary.kind === 'chapters' ? activeSummary.chapters : [],
+    summaryChapters: ['chapters', 'book'].includes(activeSummary.kind) ? activeSummary.chapters : [],
+    summaryWholeBook: activeSummary.kind === 'book',
     summarySection: activeSummary.kind === 'section' ? activeSummary.section : '',
     summaryLabel: activeSummary.kind === 'section' ? activeSummary.label : '',
-  } : { summaryIntent: false, summaryChapters: [], summarySection: '', summaryLabel: '' };
+  } : { summaryIntent: false, summaryChapters: [], summaryWholeBook: false, summarySection: '', summaryLabel: '' };
 
   if (isSummaryDetailFollowup && activeSummary === previousSummary) {
     return {
@@ -335,6 +352,11 @@ export function retrieve(question, corpus, limit = 4) {
 }
 
 const SUMMARY_EXCLUDED_SECTION = /^(?:muc tieu|cau hoi on tap|danh muc tai lieu|tai lieu tham khao|ve kien thuc|ve ky nang|ve tu tuong|hoc vien chinh tri|vien nghien cuu)\b/;
+const SUMMARY_CHAPTER_PAGES = new Map([
+  ['Chương 1', [15, 59]],
+  ['Chương 2', [61, 113]],
+  ['Chương 3', [116, 218]],
+]);
 
 function isSummaryExcluded(chunk) {
   const normalizedSection = normalize(chunk.section || '');
@@ -346,12 +368,16 @@ function isSummaryExcluded(chunk) {
 export function retrieveChapterSummary(question, corpus, limit = 24) {
   const chapters = requestedChapters(question);
   if (!chapters.length || !corpus.length) return [];
-  const perChapterLimit = Math.max(8, Math.floor(limit / chapters.length));
+  const perChapterLimit = Math.max(3, Math.floor(limit / chapters.length));
   const selected = [];
 
   for (const chapterNumber of chapters) {
     const chapter = 'Chương ' + chapterNumber;
-    const chapterChunks = corpus.filter((chunk) => chunk.chapter === chapter && !isSummaryExcluded(chunk));
+    const [firstContentPage, lastContentPage] = SUMMARY_CHAPTER_PAGES.get(chapter) || [0, Number.MAX_SAFE_INTEGER];
+    const chapterChunks = corpus.filter((chunk) => chunk.chapter === chapter
+      && chunk.page >= firstContentPage
+      && chunk.page <= lastContentPage
+      && !isSummaryExcluded(chunk));
     const byPage = new Map();
     for (const chunk of chapterChunks) {
       if (!byPage.has(chunk.page)) byPage.set(chunk.page, []);
@@ -361,15 +387,27 @@ export function retrieveChapterSummary(question, corpus, limit = 24) {
     if (!pages.length) continue;
     const sectionGroups = new Map();
     for (const chunk of chapterChunks) {
-      if (!/^[1-5]\.\s/.test(chunk.section || '')) continue;
+      const numberedSection = /^[1-5]\.\s/.test(chunk.section || '');
+      const congressSection = chapter === 'Chương 3' && ['Đại hội IX', 'Đại hội X'].includes(chunk.section);
+      if (!numberedSection && !congressSection) continue;
       const sectionKey = normalize(chunk.section);
       if (!sectionGroups.has(sectionKey)) sectionGroups.set(sectionKey, []);
       sectionGroups.get(sectionKey).push(chunk);
     }
-    const sectionAnchors = [...sectionGroups.values()]
-      .map((group) => group.sort((a, b) => a.page - b.page)[0])
-      .sort((a, b) => a.page - b.page)
-      .slice(0, Math.floor(perChapterLimit / 2));
+    const availableSectionAnchors = [...sectionGroups.values()]
+      .map((group) => {
+        const firstPage = Math.min(...group.map((chunk) => chunk.page));
+        return group.filter((chunk) => chunk.page === firstPage)
+          .sort((a, b) => b.text.length - a.text.length || a.id.localeCompare(b.id, 'vi'))[0];
+      })
+      .sort((a, b) => a.page - b.page);
+    const pageAnchors = availableSectionAnchors.filter((chunk, index, anchors) =>
+      anchors.findIndex((candidate) => candidate.page === chunk.page) === index);
+    const anchorCount = Math.min(perChapterLimit, pageAnchors.length);
+    const anchorIndexes = anchorCount === 1
+      ? [0]
+      : Array.from({ length: anchorCount }, (_, index) => Math.round(index * (pageAnchors.length - 1) / Math.max(1, anchorCount - 1)));
+    const sectionAnchors = anchorIndexes.map((index) => pageAnchors[index]);
     selected.push(...sectionAnchors);
     const anchoredPages = new Set(sectionAnchors.map((chunk) => chunk.page));
     const remainingPages = pages.filter(([page]) => !anchoredPages.has(page));
@@ -386,6 +424,24 @@ export function retrieveChapterSummary(question, corpus, limit = 24) {
   return selected.sort((a, b) => a.chapter.localeCompare(b.chapter, 'vi') || a.page - b.page);
 }
 
+export function retrieveBookSummary(corpus, limit = 21) {
+  if (!corpus.length) return [];
+  const mainChapters = retrieveChapterSummary('Tóm tắt chương 1, chương 2 và chương 3', corpus, limit);
+  const introductionPages = new Map();
+  for (const chunk of corpus) {
+    if (chunk.chapter !== 'Mở đầu' || chunk.page < 2 || chunk.page > 13 || isSummaryExcluded(chunk)) continue;
+    if (!introductionPages.has(chunk.page)) introductionPages.set(chunk.page, []);
+    introductionPages.get(chunk.page).push(chunk);
+  }
+  const pages = [...introductionPages.entries()].sort((a, b) => a[0] - b[0]);
+  const count = Math.min(2, pages.length);
+  const indexes = count === 1
+    ? [0]
+    : Array.from({ length: count }, (_, index) => Math.round(index * (pages.length - 1) / Math.max(1, count - 1)));
+  const introduction = indexes.map((index) => [...pages[index][1]].sort((a, b) => b.text.length - a.text.length)[0]);
+  return [...introduction, ...mainChapters].sort((a, b) => a.page - b.page);
+}
+
 export function retrieveSectionSummary(section, corpus, limit = 12) {
   if (!section || !corpus.length) return [];
   return corpus
@@ -397,9 +453,11 @@ export function retrieveSectionSummary(section, corpus, limit = 12) {
     .slice(0, limit);
 }
 
-function summaryEvidenceSources(question, matches, limit = 8) {
+function summaryEvidenceSources(question, matches, limit = 8, excludedPages = []) {
   if (!matches.length) return [];
-  const pageMatches = [...new Map(matches.map((chunk) => [`${chunk.chapter}:${chunk.page}`, chunk])).values()];
+  const excludedPageSet = new Set(excludedPages);
+  const pageMatches = [...new Map(matches.map((chunk) => [`${chunk.chapter}:${chunk.page}`, chunk])).values()]
+    .filter((chunk) => !excludedPageSet.has(chunk.page));
   const count = Math.min(limit, pageMatches.length);
   const indexes = count === 1
     ? [0]
@@ -408,9 +466,44 @@ function summaryEvidenceSources(question, matches, limit = 8) {
     const chunk = pageMatches[index];
     return {
       ...publicSource(question, chunk),
-      excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 900),
+      excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 700),
     };
   });
+}
+
+function wholeBookSummarySources(question, matches, limit, excludedPages = []) {
+  if (limit <= 0) return [];
+  const excludedPageSet = new Set(excludedPages);
+  const preferences = [
+    ['Mở đầu', 13],
+    ['Chương 1', 42],
+    ['Chương 2', 99],
+    ['Chương 3', 146],
+    ['Chương 3', 153],
+    ['Chương 3', 195],
+  ];
+  const selected = [];
+  for (const [chapter, page] of preferences) {
+    const chunk = matches.find((item) => item.chapter === chapter && item.page === page);
+    if (!chunk || excludedPageSet.has(page) || selected.some((item) => item.page === page)) continue;
+    selected.push(chunk);
+    if (selected.length >= limit) break;
+  }
+  const selectedSources = selected.map((chunk) => ({
+    ...publicSource(question, chunk),
+    excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 700),
+  }));
+  if (selectedSources.length < limit) {
+    const selectedPages = new Set([...excludedPageSet, ...selected.map((chunk) => chunk.page)]);
+    selectedSources.push(...summaryEvidenceSources(
+      question,
+      matches.filter((chunk) => !selectedPages.has(chunk.page)),
+      limit - selectedSources.length,
+      [...selectedPages],
+    ));
+    return selectedSources;
+  }
+  return selectedSources;
 }
 
 function relevantSentences(question, passage) {
@@ -493,8 +586,19 @@ function chapterStructureSources(question, corpus) {
   });
 }
 
-function chapterTitleSources(chapters) {
+function chapterTitleSources(chapters, includeIntroduction = false) {
   return TEXTBOOK_STRUCTURE.flatMap((entry) => {
+    if (includeIntroduction && entry.indexedChapter === 'Mở đầu') {
+      return [{
+        id: 'chapter-title-introduction',
+        file: BOOK_PDF,
+        chapter: entry.chapter,
+        section: '',
+        page: entry.page,
+        excerpt: entry.title,
+        sourceType: 'giao trinh',
+      }];
+    }
     const chapterNumber = Number(entry.indexedChapter.match(/^Chương\s+(\d+)$/)?.[1]);
     if (!chapters.includes(chapterNumber)) return [];
     return [{
@@ -542,26 +646,27 @@ export function answerQuestion(question, corpus, history = []) {
       suggestions: [],
       grounded: null,
       textbookChecked: false,
-      responseKind: 'general',
+      responseKind: isContextualReaction(question, history) ? 'conversation-followup' : 'general',
       retrievalQuestion: effectiveQuestion,
       summaryIntent: false,
       summaryChapters: [],
+      summaryWholeBook: false,
     };
   }
   const normalizedQuestion = normalize(effectiveQuestion);
-  if (context.summaryIntent && !context.summaryChapters.length) {
+  if (context.summaryIntent && !context.summaryChapters.length && !context.summaryWholeBook) {
     if (context.summarySection) {
       const summaryQuestion = effectiveQuestion;
       const matches = retrieveSectionSummary(context.summarySection, corpus, 12);
       return {
         answer: '',
-        sources: summaryEvidenceSources(summaryQuestion, matches, matches.length),
+        sources: summaryEvidenceSources(summaryQuestion, matches, Math.min(10, matches.length)),
         evidence: matches.map((chunk) => ({
           file: chunk.sourceFile || BOOK_PDF,
           chapter: chunk.chapter,
           section: chunk.section,
           page: chunk.page,
-          excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 1200),
+          excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 700),
         })),
         suggestions: NEXT_QUESTIONS,
         grounded: matches.length > 0,
@@ -587,26 +692,35 @@ export function answerQuestion(question, corpus, history = []) {
       retrievalQuestion: effectiveQuestion,
     };
   }
-  if (context.summaryIntent && context.summaryChapters.length) {
+  if (context.summaryIntent && (context.summaryChapters.length || context.summaryWholeBook)) {
     const summaryQuestion = effectiveQuestion;
-    const matches = retrieveChapterSummary(summaryQuestion, corpus, 24);
-    const titleSources = chapterTitleSources(context.summaryChapters);
+    const matches = context.summaryWholeBook
+      ? retrieveBookSummary(corpus, 21)
+      : retrieveChapterSummary(summaryQuestion, corpus, 12);
+    const titleSources = chapterTitleSources(context.summaryChapters, context.summaryWholeBook);
+    const remainingSourceSlots = Math.max(0, 10 - titleSources.length);
+    const evidenceSources = context.summaryWholeBook
+      ? wholeBookSummarySources(summaryQuestion, matches, remainingSourceSlots, titleSources.map((source) => source.page))
+      : summaryEvidenceSources(summaryQuestion, matches, remainingSourceSlots);
     return {
       answer: '',
-      sources: [...titleSources, ...summaryEvidenceSources(summaryQuestion, matches, Math.max(1, 12 - titleSources.length))],
-      evidence: [...titleSources, ...matches.map((chunk) => ({
+      sources: context.summaryWholeBook
+        ? [...evidenceSources, ...titleSources].slice(0, 10)
+        : [...titleSources, ...evidenceSources],
+      evidence: matches.map((chunk) => ({
         file: chunk.sourceFile || BOOK_PDF,
         chapter: chunk.chapter,
         section: chunk.section,
         page: chunk.page,
-        excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 1200),
-      }))],
+        excerpt: chunk.text.replace(/\s+/g, ' ').trim().slice(0, 700),
+      })),
       suggestions: NEXT_QUESTIONS,
       grounded: matches.length > 0,
       textbookChecked: true,
-      responseKind: 'chapter-summary',
+      responseKind: context.summaryWholeBook ? 'book-summary' : 'chapter-summary',
       summaryIntent: true,
       summaryChapters: context.summaryChapters,
+      summaryWholeBook: context.summaryWholeBook,
       retrievalQuestion: summaryQuestion,
       followedUp: context.followup,
     };
@@ -623,6 +737,7 @@ export function answerQuestion(question, corpus, history = []) {
       retrievalQuestion: question,
       summaryIntent: false,
       summaryChapters: [],
+      summaryWholeBook: false,
     };
   }
   const isPlanQuestion = normalizedQuestion.includes('2001 2005');
